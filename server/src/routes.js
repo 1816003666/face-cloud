@@ -1012,6 +1012,47 @@ export function registerRoutes(app, { authRequired, getClient, getServers, addSe
       res.status(500).json({ code: 500, message: e.message })
     }
   })
+
+  // SDK: MJPEG 实时截图流
+  app.get('/api/sdk/devices/:serverId/:deviceName/stream', authRequired, async (req, res) => {
+    try {
+      const cfg = getServerConfig(req.params.serverId)
+      const sdkClient = getSdkClient(req.params.serverId, cfg)
+      const deviceName = decodeURIComponent(req.params.deviceName)
+      const fps = Math.min(Math.max(parseInt(req.query.fps) || 2, 1), 5)
+      const intervalMs = Math.round(1000 / fps)
+      res.writeHead(200, {
+        'Content-Type': 'multipart/x-mixed-replace; boundary=frame',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+      })
+      let consecutiveErrors = 0
+      const sendFrame = async () => {
+        try {
+          const result = await sdkClient.getScreenshot(deviceName)
+          if (result && result.data) {
+            const jpegBuffer = Buffer.from(result.data, 'base64')
+            res.write(`--frame\r\n`)
+            res.write(`Content-Type: ${result.contentType || 'image/jpeg'}\r\n`)
+            res.write(`Content-Length: ${jpegBuffer.length}\r\n\r\n`)
+            res.write(jpegBuffer)
+            res.write(`\r\n`)
+            consecutiveErrors = 0
+          }
+        } catch (e) {
+          consecutiveErrors++
+          if (consecutiveErrors >= 5) { clearInterval(timer); try { res.end() } catch {} }
+        }
+      }
+      await sendFrame()
+      const timer = setInterval(sendFrame, intervalMs)
+      req.on('close', () => clearInterval(timer))
+      req.on('error', () => clearInterval(timer))
+    } catch (e) {
+      try { res.status(500).json({ message: e.message }) } catch {}
+    }
+  })
 }
 
 // 把 SDK 设备列表转成前端期望的格式
